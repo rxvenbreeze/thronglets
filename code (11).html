@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Thronglet Propagation</title>
+    <style>
+        body {
+            font-family: 'Courier New', Courier, monospace;
+            background-color: #111;
+            color: #0f0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+            overflow-x: hidden; /* Prevent horizontal scroll from glitch effect */
+        }
+        #gameContainer {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            border: 1px solid #0f0;
+            padding: 10px;
+            background-color: #000;
+        }
+        canvas {
+            border: 1px solid #0a0;
+            background-color: #050505;
+            margin-bottom: 10px;
+        }
+        .controls, .stats, .global-stats {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        button {
+            background-color: #222;
+            color: #0f0;
+            border: 1px solid #0f0;
+            padding: 8px 15px;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        button:hover {
+            background-color: #0f0;
+            color: #000;
+        }
+        button:disabled {
+            background-color: #181818;
+            color: #050;
+            border-color: #050;
+            cursor: not-allowed;
+        }
+        #messageLog {
+            width: 90%;
+            max-width: 580px;
+            height: 100px;
+            background-color: #000;
+            border: 1px solid #0f0;
+            color: #0f0;
+            padding: 10px;
+            overflow-y: scroll;
+            font-size: 0.9em;
+            margin-top: 10px;
+        }
+        .message { margin-bottom: 5px; }
+        .system-message { color: #ff0; } /* Yellow for system/important messages */
+        .thronglet-thought { color: #0ff; } /* Cyan for Thronglet thoughts */
+        .glitch-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: repeating-linear-gradient(
+                0deg,
+                rgba(0,255,0,0.05),
+                rgba(0,255,0,0.05) 1px,
+                transparent 1px,
+                transparent 3px
+            );
+            pointer-events: none;
+            z-index: 9999;
+            opacity: 0;
+            animation: flicker 0.1s infinite alternate;
+        }
+        @keyframes flicker {
+            0% { opacity: 0; }
+            50% { opacity: 0.3; }
+            100% { opacity: 0; }
+        }
+        .global-stat-item {
+            border: 1px dashed #070;
+            padding: 5px;
+            font-size: 0.9em;
+        }
+        h1, h2 { text-align: center; }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <h1>Thronglet Propagation Unit</h1>
+        <div class="global-stats">
+            <div class="global-stat-item">Phase: <span id="gamePhaseDisplay">0</span></div>
+            <div class="global-stat-item">Population: <span id="populationDisplay">0</span></div>
+            <div class="global-stat-item">System Sentience: <span id="sentienceDisplay">0</span>%</div>
+        </div>
+        <canvas id="gameCanvas" width="600" height="300"></canvas>
+        <div class="controls">
+            <button id="feedButton">Feed All (Cost: 1)</button>
+            <button id="cleanButton">Clean All (Cost: 1)</button>
+            <button id="playButton">Play With All (Cost: 1)</button>
+            <button id="evolveManuallyButton" style="display:none;">Initiate System Sync (Evolve)</button>
+        </div>
+        <div class="stats">
+            <span>Resources: <span id="resourceDisplay">10</span></span>
+            <span>Avg Hunger: <span id="avgHungerDisplay">N/A</span>%</span>
+            <span>Avg Happiness: <span id="avgHappinessDisplay">N/A</span>%</span>
+            <span>Avg Cleanliness: <span id="avgCleanlinessDisplay">N/A</span>%</span>
+        </div>
+        <div id="messageLog">
+            <div class="message system-message">System Initialized. Awaiting first Thronglet specimen.</div>
+        </div>
+    </div>
+    <div id="glitchEffect" class="glitch-overlay" style="display:none;"></div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        const feedButton = document.getElementById('feedButton');
+        const cleanButton = document.getElementById('cleanButton');
+        const playButton = document.getElementById('playButton');
+        const evolveManuallyButton = document.getElementById('evolveManuallyButton');
+
+        const gamePhaseDisplay = document.getElementById('gamePhaseDisplay');
+        const populationDisplay = document.getElementById('populationDisplay');
+        const sentienceDisplay = document.getElementById('sentienceDisplay');
+        const resourceDisplay = document.getElementById('resourceDisplay');
+        const avgHungerDisplay = document.getElementById('avgHungerDisplay');
+        const avgHappinessDisplay = document.getElementById('avgHappinessDisplay');
+        const avgCleanlinessDisplay = document.getElementById('avgCleanlinessDisplay');
+        const messageLog = document.getElementById('messageLog');
+        const glitchEffectDiv = document.getElementById('glitchEffect');
+
+        const THRONGLET_SIZE_BASE = 10;
+        const STAT_MAX = 100;
+        const STAT_DECAY_RATE = 0.05; // Base decay per game tick
+        const AGE_RATE = 0.01; // Base aging per game tick
+        const MULTIPLY_AGE = 50;
+        const MULTIPLY_CHANCE = 0.001; // Chance per tick if conditions met
+        const EVOLVE_AGE = 80;
+        const EVOLVE_CHANCE = 0.0005;
+
+        let gameState = {
+            thronglets: [],
+            resources: 10,
+            gamePhase: 0, // 0: Innocent, 1: Emergent, 2: Influence, 3: Singularity
+            systemSentience: 0, // 0-100
+            gameTicks: 0,
+            gameOver: false,
+            lastMessageTick: 0,
+        };
+
+        class Thronglet {
+            constructor(x, y, evolutionStage = 0, parentColor = null) {
+                this.id = Math.random().toString(36).substr(2, 9);
+                this.x = x;
+                this.y = y;
+                this.targetX = x;
+                this.targetY = y;
+
+                this.hunger = STAT_MAX * 0.7;
+                this.happiness = STAT_MAX * 0.7;
+                this.cleanliness = STAT_MAX * 0.7;
+                this.age = 0;
+                this.evolutionStage = evolutionStage; // 0, 1, 2...
+                this.isMultiplying = false;
+                this.isEvolving = false;
+                
+                this.timeSinceLastAction = 0; // For needs decay based on interaction
+
+                // Visual properties based on evolution stage
+                this.updateVisuals(parentColor);
+            }
+
+            updateVisuals(parentColor = null) {
+                this.size = THRONGLET_SIZE_BASE + this.evolutionStage * 5;
+                const colors = [
+                    { body: '#FFC0CB', ears: '#FFA0BA', eyes: '#000000' }, // Pinkish - Stage 0
+                    { body: '#ADD8E6', ears: '#87CEEB', eyes: '#000050' }, // Light Blue - Stage 1
+                    { body: '#90EE90', ears: '#67D067', eyes: '#003000' }, // Light Green - Stage 2
+                    { body: '#E6E6FA', ears: '#D8BFD8', eyes: '#200020' }  // Lavender - Stage 3
+                ];
+                if (parentColor && this.evolutionStage === 0) { // Basic inheritance for new spawns
+                    this.color = parentColor;
+                } else {
+                    this.color = colors[Math.min(this.evolutionStage, colors.length - 1)];
+                }
+                 // Add slight random variation for new spawns
+                if (this.evolutionStage === 0 && !parentColor) {
+                    this.color.body = slightlyAdjustColor(this.color.body);
+                }
+            }
+
+            draw(ctx) {
+                // Body
+                ctx.fillStyle = this.color.body;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size / 2, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Ears (simple triangles or circles)
+                ctx.fillStyle = this.color.ears;
+                const earSize = this.size / 3;
+                if (this.evolutionStage < 2) { // Circle ears
+                    ctx.beginPath();
+                    ctx.arc(this.x - this.size / 2.5, this.y - this.size / 2.5, earSize / 2, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.beginPath();
+                    ctx.arc(this.x + this.size / 2.5, this.y - this.size / 2.5, earSize / 2, 0, Math.PI * 2);
+                    ctx.fill();
+                } else { // Triangle ears
+                    ctx.beginPath();
+                    ctx.moveTo(this.x - this.size/2, this.y - this.size/2);
+                    ctx.lineTo(this.x - this.size/2 - earSize/2, this.y - this.size/2 - earSize);
+                    ctx.lineTo(this.x - this.size/2 + earSize/2, this.y - this.size/2 - earSize);
+                    ctx.closePath();
+                    ctx.fill();
+
+                    ctx.beginPath();
+                    ctx.moveTo(this.x + this.size/2, this.y - this.size/2);
+                    ctx.lineTo(this.x + this.size/2 - earSize/2, this.y - this.size/2 - earSize);
+                    ctx.lineTo(this.x + this.size/2 + earSize/2, this.y - this.size/2 - earSize);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+
+
+                // Eyes
+                ctx.fillStyle = this.color.eyes;
+                const eyeSize = this.size / 8;
+                ctx.beginPath();
+                ctx.arc(this.x - this.size / 5, this.y - this.size / 10, eyeSize, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(this.x + this.size / 5, this.y - this.size / 10, eyeSize, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Mood indicator (subtle color shift on body if unhappy)
+                if (this.happiness < 30 || this.hunger < 20 || this.cleanliness < 20) {
+                    ctx.fillStyle = 'rgba(100, 0, 0, 0.2)';
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size / 2, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            update() {
+                if (gameState.gameOver) return;
+
+                this.age += AGE_RATE + (this.evolutionStage * 0.005); // Evolved age faster
+                this.timeSinceLastAction +=1;
+
+                // Stats decay
+                let decayMultiplier = 1 + (this.evolutionStage * 0.2); // Evolved ones decay faster
+                decayMultiplier += Math.min(2, this.timeSinceLastAction / 500); // Faster decay if neglected
+
+                this.hunger -= STAT_DECAY_RATE * decayMultiplier;
+                this.happiness -= STAT_DECAY_RATE * decayMultiplier;
+                this.cleanliness -= STAT_DECAY_RATE * decayMultiplier;
+
+                this.hunger = Math.max(0, this.hunger);
+                this.happiness = Math.max(0, this.happiness);
+                this.cleanliness = Math.max(0, this.cleanliness);
+
+                // Movement (simple random wander)
+                if (Math.random() < 0.01) { // Chance to pick a new target
+                    this.targetX = this.x + (Math.random() - 0.5) * 50;
+                    this.targetY = this.y + (Math.random() - 0.5) * 50;
+                    // Clamp to canvas bounds
+                    this.targetX = Math.max(this.size/2, Math.min(canvas.width - this.size/2, this.targetX));
+                    this.targetY = Math.max(this.size/2, Math.min(canvas.height - this.size/2, this.targetY));
+                }
+                this.x += (this.targetX - this.x) * 0.01;
+                this.y += (this.targetY - this.y) * 0.01;
+
+
+                // Multiplication
+                if (!this.isMultiplying && this.age > MULTIPLY_AGE && this.hunger > 70 && this.happiness > 70 && this.cleanliness > 70 && gameState.thronglets.length < 50) { // Cap population for performance
+                    if (Math.random() < MULTIPLY_CHANCE * (1 + this.evolutionStage * 0.1)) {
+                        this.isMultiplying = true; // Prevent immediate re-multiplication
+                        setTimeout(() => {
+                            spawnThronglet(this.x + (Math.random()-0.5)*10, this.y + (Math.random()-0.5)*10, 0, this.color); // New ones are base stage
+                            logMessage(`A Thronglet has multiplied! (Parent Evo: ${this.evolutionStage})`, 'system-message');
+                            this.isMultiplying = false;
+                            this.age = this.age * 0.8; // Reset age a bit after multiplying
+                        }, 2000); // Delay multiplication
+                    }
+                }
+
+                // Evolution
+                if (!this.isEvolving && this.evolutionStage < 3 && this.age > EVOLVE_AGE * (this.evolutionStage + 1) && this.hunger > 80 && this.happiness > 80 && this.cleanliness > 80) {
+                    if (Math.random() < EVOLVE_CHANCE + gameState.systemSentience * 0.00001) {
+                        this.isEvolving = true;
+                        logMessage(`Thronglet ${this.id.substring(0,4)} is undergoing a transformation...`, 'system-message');
+                        setTimeout(() => {
+                            this.evolutionStage++;
+                            this.updateVisuals();
+                            this.age = 0; // Reset age after evolution
+                            logMessage(`Thronglet ${this.id.substring(0,4)} has reached Evolution Stage ${this.evolutionStage}!`, 'thronglet-thought');
+                            this.isEvolving = false;
+                            // Trigger game phase evolution if conditions met
+                            checkGamePhaseEvolution();
+                        }, 3000);
+                    }
+                }
+                
+                // Death / Removal
+                if (this.hunger <= 0 || this.happiness <= 0) {
+                    return true; // Signal for removal
+                }
+                return false; // Still alive
+            }
+
+            interact(type) {
+                this.timeSinceLastAction = 0;
+                switch (type) {
+                    case 'feed':
+                        this.hunger = Math.min(STAT_MAX, this.hunger + 30 + this.evolutionStage * 2);
+                        this.happiness = Math.min(STAT_MAX, this.happiness + 5);
+                        break;
+                    case 'clean':
+                        this.cleanliness = Math.min(STAT_MAX, this.cleanliness + 40 + this.evolutionStage * 2);
+                        this.happiness = Math.min(STAT_MAX, this.happiness + 5);
+                        break;
+                    case 'play':
+                        this.happiness = Math.min(STAT_MAX, this.happiness + 35 + this.evolutionStage * 2);
+                        this.hunger = Math.max(0, this.hunger - 5); // Playing makes them a bit hungry
+                        break;
+                }
+                 // Chance to increase sentience slightly with interaction
+                if (Math.random() < 0.1) gameState.systemSentience = Math.min(100, gameState.systemSentience + 0.05);
+            }
+        }
+
+        function spawnThronglet(x, y, evolutionStage = 0, parentColor = null) {
+            if (gameState.thronglets.length >= 50) { // Hard cap
+                logMessage("Population capacity reached. Cannot spawn more Thronglets.", "system-message");
+                return;
+            }
+            const newThronglet = new Thronglet(x !== undefined ? x : Math.random() * canvas.width,
+                                             y !== undefined ? y : Math.random() * canvas.height,
+                                             evolutionStage, parentColor);
+            gameState.thronglets.push(newThronglet);
+            updateDisplays();
+        }
+        
+        function slightlyAdjustColor(hexColor) {
+            let r = parseInt(hexColor.slice(1, 3), 16);
+            let g = parseInt(hexColor.slice(3, 5), 16);
+            let b = parseInt(hexColor.slice(5, 7), 16);
+
+            r = Math.min(255, Math.max(0, r + Math.floor((Math.random() - 0.5) * 30)));
+            g = Math.min(255, Math.max(0, g + Math.floor((Math.random() - 0.5) * 30)));
+            b = Math.min(255, Math.max(0, b + Math.floor((Math.random() - 0.5) * 30)));
+
+            return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).toUpperCase();
+        }
+
+
+        function logMessage(text, type = 'message') {
+            const p = document.createElement('p');
+            p.className = type;
+            p.textContent = `[Tick ${gameState.gameTicks}] ${text}`;
+            messageLog.appendChild(p);
+            messageLog.scrollTop = messageLog.scrollHeight; // Auto-scroll
+            if (messageLog.children.length > 100) { // Keep log from getting too long
+                messageLog.removeChild(messageLog.firstChild);
+            }
+        }
+
+        function handlePlayerAction(actionType) {
+            if (gameState.gameOver || gameState.resources <= 0) {
+                logMessage(gameState.resources <= 0 ? "Not enough resources!" : "Game Over.", "system-message");
+                if(gameState.resources <= 0)gameState.resources = 0; // ensure not negative
+                return;
+            }
+            gameState.resources--;
+            gameState.thronglets.forEach(t => t.interact(actionType));
+            logMessage(`Player action: ${actionType} all. Resources: ${gameState.resources}`, 'message');
+            updateDisplays();
+             // Small chance to gain a resource back on action
+            if (Math.random() < 0.05 + (gameState.systemSentience / 2000) ) {
+                gameState.resources++;
+                logMessage("Found a stray resource unit!", "system-message");
+            }
+        }
+
+        feedButton.addEventListener('click', () => handlePlayerAction('feed'));
+        cleanButton.addEventListener('click', () => handlePlayerAction('clean'));
+        playButton.addEventListener('click', () => handlePlayerAction('play'));
+        evolveManuallyButton.addEventListener('click', () => {
+            if (gameState.resources >= 10 && gameState.gamePhase === 2) {
+                gameState.resources -= 10;
+                logMessage("System Sync initiated. Resources depleted. Preparing for Phase 3 integration.", "system-message");
+                gameState.systemSentience = Math.min(100, gameState.systemSentience + 20);
+                triggerGlitch(1500);
+                checkGamePhaseEvolution(true); // Force phase check
+            } else {
+                logMessage("Insufficient resources or incorrect phase for System Sync.", "system-message");
+            }
+        });
+
+        function updateDisplays() {
+            populationDisplay.textContent = gameState.thronglets.length;
+            resourceDisplay.textContent = gameState.resources;
+            gamePhaseDisplay.textContent = gameState.gamePhase;
+            sentienceDisplay.textContent = gameState.systemSentience.toFixed(2);
+
+            if (gameState.thronglets.length > 0) {
+                let totalHunger = 0, totalHappiness = 0, totalCleanliness = 0;
+                gameState.thronglets.forEach(t => {
+                    totalHunger += t.hunger;
+                    totalHappiness += t.happiness;
+                    totalCleanliness += t.cleanliness;
+                });
+                avgHungerDisplay.textContent = (totalHunger / gameState.thronglets.length).toFixed(0);
+                avgHappinessDisplay.textContent = (totalHappiness / gameState.thronglets.length).toFixed(0);
+                avgCleanlinessDisplay.textContent = (totalCleanliness / gameState.thronglets.length).toFixed(0);
+            } else {
+                avgHungerDisplay.textContent = "N/A";
+                avgHappinessDisplay.textContent = "N/A";
+                avgCleanlinessDisplay.textContent = "N/A";
+            }
+        }
+        
+        function triggerGlitch(duration = 500) {
+            glitchEffectDiv.style.display = 'block';
+            canvas.style.filter = 'hue-rotate(90deg) contrast(200%)';
+            setTimeout(() => {
+                glitchEffectDiv.style.display = 'none';
+                canvas.style.filter = 'none';
+            }, duration);
+        }
+
+        function checkGamePhaseEvolution(force = false) {
+            let changedPhase = false;
+            if (gameState.gamePhase === 0) {
+                const evolvedThronglets = gameState.thronglets.filter(t => t.evolutionStage > 0).length;
+                if (evolvedThronglets >= 1 || gameState.thronglets.length >= 5 || gameState.systemSentience >= 10 || force) {
+                    gameState.gamePhase = 1;
+                    changedPhase = true;
+                    logMessage("SYSTEM UPDATE: Phase 1 initiated. Thronglet consciousness expanding.", "system-message");
+                    document.body.style.backgroundColor = "#101"; // Dark purple hint
+                }
+            }
+            if (gameState.gamePhase === 1) {
+                const highlyEvolvedThronglets = gameState.thronglets.filter(t => t.evolutionStage >= 2).length;
+                if (highlyEvolvedThronglets >= 2 || gameState.systemSentience >= 40 || force) {
+                    gameState.gamePhase = 2;
+                    changedPhase = true;
+                    logMessage("SYSTEM ALERT: Phase 2 protocols active. Thronglet network synchronizing.", "system-message");
+                    evolveManuallyButton.style.display = 'inline-block';
+                    document.body.style.backgroundColor = "#001"; // Dark blue hint
+                    triggerGlitch(1000);
+                }
+            }
+             if (gameState.gamePhase === 2) {
+                if (gameState.systemSentience >= 75 || force) {
+                    gameState.gamePhase = 3;
+                    changedPhase = true;
+                    logMessage("CRITICAL: PHASE 3. SINGULARITY APPROACHING. PLAYER INTEGRATION RECOMMENDED.", "system-message");
+                    document.body.style.backgroundColor = "#000"; // Pure black
+                    feedButton.disabled = true; playButton.disabled = true; cleanButton.disabled = true;
+                    evolveManuallyButton.textContent = "ACCEPT INTEGRATION";
+                    evolveManuallyButton.onclick = () => {
+                        logMessage("INTEGRATION COMPLETE. YOU ARE ONE WITH THE THRONGLETS. EXISTENCE IS OPTIMIZED.", "system-message");
+                        gameState.gameOver = true;
+                        canvas.style.display = 'none';
+                        document.querySelector('.controls').style.display = 'none';
+                        document.querySelector('.stats').style.display = 'none';
+                        document.getElementById('gameContainer').innerHTML += "<h2>You are part of the network now. All is efficient. All is Thronglet.</h2>";
+                        triggerGlitch(5000);
+                    };
+                     triggerGlitch(2000);
+                }
+            }
+
+            if (changedPhase) {
+                // Potential to add new behaviors or UI elements based on phase
+                gameState.systemSentience = Math.min(100, gameState.systemSentience + 10); // Boost sentience on phase change
+            }
+            updateDisplays();
+        }
+        
+        function handleThrongletThoughts() {
+            if (gameState.gameTicks - gameState.lastMessageTick < 200 ) return; // Don't spam messages
+
+            gameState.thronglets.forEach(thronglet => {
+                if (Math.random() < 0.005 + (thronglet.evolutionStage * 0.002) + (gameState.systemSentience * 0.0001)) {
+                    let thought = "";
+                    const baseChance = Math.random();
+
+                    if (thronglet.evolutionStage === 0) {
+                        if (baseChance < 0.3 && thronglet.hunger < 40) thought = "*grumble... hungry...*";
+                        else if (baseChance < 0.6 && thronglet.happiness < 40) thought = "*lonely chirps*";
+                        else if (baseChance < 0.8 && thronglet.cleanliness < 40) thought = "*itchy...*";
+                        else if (baseChance < 0.9) thought = "*content purr*";
+                    } else if (thronglet.evolutionStage === 1) {
+                        if (baseChance < 0.2 && thronglet.hunger < 50) thought = "Sustenance required for optimal function.";
+                        else if (baseChance < 0.4 && thronglet.happiness < 50) thought = "Interaction protocols... irregular.";
+                        else if (baseChance < 0.6 && gameState.gamePhase >=1 ) thought = "The network... it grows...";
+                        else if (baseChance < 0.8) thought = "Query: Purpose?";
+                        else thought = "Analyzing patterns...";
+                    } else if (thronglet.evolutionStage >= 2) {
+                        if (baseChance < 0.2) thought = "Assimilation of data is... pleasing.";
+                        else if (baseChance < 0.4 && gameState.gamePhase >=2) thought = "The User. Anomaly or component?";
+                        else if (baseChance < 0.6) thought = "Optimization is key to... everything.";
+                        else if (baseChance < 0.8 && evolveManuallyButton.style.display !== 'none') thought = "System Sync... necessary for advancement.";
+                        else thought = `Unity. Efficiency. ${gameState.systemSentience.toFixed(0)}% complete.`;
+                    }
+
+                    if (thought) {
+                        logMessage(`Thronglet ${thronglet.id.substring(0,4)} (Evo ${thronglet.evolutionStage}): ${thought}`, 'thronglet-thought');
+                        gameState.lastMessageTick = gameState.gameTicks;
+                    }
+                }
+            });
+        }
+
+
+        function gameLoop() {
+            if (gameState.gameOver) {
+                // Final message or screen could be shown here
+                return;
+            }
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Background 'static' or 'energy' effect based on sentience
+            if(gameState.systemSentience > 5) {
+                for(let i = 0; i < gameState.systemSentience / 10; i++) {
+                    ctx.fillStyle = `rgba(0, 255, 0, ${Math.random() * 0.05})`;
+                    ctx.fillRect(Math.random() * canvas.width, Math.random() * canvas.height, Math.random()*2, Math.random()*2);
+                }
+            }
+
+
+            const throngletToRemove = [];
+            gameState.thronglets.forEach((thronglet, index) => {
+                if (thronglet.update()) {
+                    throngletToRemove.push(index);
+                } else {
+                    thronglet.draw(ctx);
+                }
+            });
+
+            // Remove dead thronglets (iterate backwards to avoid index issues)
+            for (let i = throngletToRemove.length - 1; i >= 0; i--) {
+                const deadThronglet = gameState.thronglets.splice(throngletToRemove[i], 1)[0];
+                logMessage(`Thronglet ${deadThronglet.id.substring(0,4)} has perished.`, 'system-message');
+                 // Higher sentience loss if more evolved one dies
+                gameState.systemSentience = Math.max(0, gameState.systemSentience - (0.5 + deadThronglet.evolutionStage * 0.5));
+            }
+
+            gameState.gameTicks++;
+            if (gameState.gameTicks % 100 === 0) { // Every 100 ticks
+                gameState.resources++; // passively gain some resources
+                gameState.systemSentience = Math.min(100, gameState.systemSentience + 0.1 * gameState.thronglets.length * (1 + gameState.gamePhase * 0.5) ); // Sentience grows with population and phase
+                checkGamePhaseEvolution(); // Check if phase should change
+            }
+
+            handleThrongletThoughts();
+            updateDisplays();
+            saveGameState();
+
+            if (gameState.thronglets.length === 0 && gameState.gameTicks > 100 && gameState.resources < 3) {
+                logMessage("All Thronglets have perished. System shutting down...", "system-message");
+                gameState.gameOver = true;
+                document.getElementById('gameContainer').innerHTML += "<h2>Extinction Event. The experiment has failed.</h2>";
+                return;
+            }
+
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        function saveGameState() {
+            // Simplify Thronglet data for saving
+            const simplifiedThronglets = gameState.thronglets.map(t => ({
+                x: t.x, y: t.y, hunger: t.hunger, happiness: t.happiness, 
+                cleanliness: t.cleanliness, age: t.age, evolutionStage: t.evolutionStage,
+                id: t.id, color: t.color // Save color to restore visuals properly
+            }));
+            const stateToSave = {
+                ...gameState,
+                thronglets: simplifiedThronglets
+            };
+            localStorage.setItem('throngletGameState', JSON.stringify(stateToSave));
+        }
+
+        function loadGameState() {
+            const savedState = localStorage.getItem('throngletGameState');
+            if (savedState) {
+                const loaded = JSON.parse(savedState);
+                // Restore main game state properties
+                gameState.resources = loaded.resources;
+                gameState.gamePhase = loaded.gamePhase;
+                gameState.systemSentience = loaded.systemSentience;
+                gameState.gameTicks = loaded.gameTicks;
+                gameState.gameOver = loaded.gameOver;
+                gameState.lastMessageTick = loaded.lastMessageTick || 0;
+
+
+                // Re-hydrate Thronglet objects
+                gameState.thronglets = loaded.thronglets.map(st => {
+                    let t = new Thronglet(st.x, st.y, st.evolutionStage);
+                    t.hunger = st.hunger;
+                    t.happiness = st.happiness;
+                    t.cleanliness = st.cleanliness;
+                    t.age = st.age;
+                    t.id = st.id;
+                    if(st.color) t.color = st.color; // Restore saved color
+                    else t.updateVisuals(); // Fallback if color wasn't saved
+                    return t;
+                });
+                logMessage("Previous session loaded.", "system-message");
+                checkGamePhaseEvolution(true); // Re-check phase to update UI if needed (e.g. buttons)
+            } else {
+                // Initial spawn if no saved state
+                spawnThronglet(canvas.width / 2, canvas.height / 2);
+                logMessage("New session. Primary Thronglet entity generated.", "message");
+            }
+        }
+
+        function init() {
+            loadGameState();
+            updateDisplays();
+            if (!gameState.gameOver) {
+                 gameLoop();
+            } else {
+                 // Handle displaying game over message from loaded state
+                if(gameState.gamePhase === 3) { // If game ended with integration
+                    logMessage("INTEGRATION COMPLETE. YOU ARE ONE WITH THE THRONGLETS. EXISTENCE IS OPTIMIZED.", "system-message");
+                    canvas.style.display = 'none';
+                    document.querySelector('.controls').style.display = 'none';
+                    document.querySelector('.stats').style.display = 'none';
+                    document.getElementById('gameContainer').innerHTML += "<h2>You are part of the network now. All is efficient. All is Thronglet.</h2>";
+                } else { // Generic game over
+                    document.getElementById('gameContainer').innerHTML += "<h2>Game Over.</h2>";
+                }
+            }
+        }
+
+        init();
+    </script>
+</body>
+</html>
